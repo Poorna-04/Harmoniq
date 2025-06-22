@@ -1,8 +1,6 @@
-Flask
+flask
 pandas
 numpy
-librosa
 scikit-learn
-sentence-transformers
 spotipy
 gunicorn
