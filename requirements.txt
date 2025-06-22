@@ -1,0 +1,8 @@
+Flask
+pandas
+numpy
+librosa
+scikit-learn
+sentence-transformers
+spotipy
+gunicorn
