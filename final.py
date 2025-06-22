@@ -2,27 +2,18 @@ from flask import Flask, request, render_template_string
 import os, random
 import pandas as pd
 import numpy as np
-import librosa
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics.pairwise import cosine_similarity
-from sentence_transformers import SentenceTransformer
 import spotipy
 from spotipy.oauth2 import SpotifyClientCredentials
-from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
-
-# === File Upload Configuration ===
-UPLOAD_FOLDER = 'uploads'
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
 # === Spotify API ===
 sp = spotipy.Spotify(client_credentials_manager=SpotifyClientCredentials(
     client_id=os.getenv("SPOTIFY_CLIENT_ID"),
     client_secret=os.getenv("SPOTIFY_CLIENT_SECRET")
 ))
-
 
 # === Load Dataset ===
 df = pd.read_csv("dataset.csv")
@@ -34,45 +25,7 @@ df = df.dropna(subset=audio_features)
 scaler = MinMaxScaler()
 df[audio_features] = scaler.fit_transform(df[audio_features])
 
-# === Sentence Transformer for Mood Queries ===
-model = SentenceTransformer("all-MiniLM-L6-v2")
-feature_prompts = {
-    "danceability": "danceable song good for dancing",
-    "energy": "high energy loud fast song",
-    "valence": "happy positive mood uplifting",
-    "tempo": "fast beat or high tempo music",
-    "acousticness": "soft acoustic calm natural instruments",
-    "instrumentalness": "instrumental music without vocals",
-    "liveness": "live performance concert feel",
-    "speechiness": "talking speech spoken words"
-}
-feature_embeddings = {f: model.encode(desc) for f, desc in feature_prompts.items()}
-
-# === Utilities ===
-def extract_features(path):
-    y, sr = librosa.load(path)
-    features = {
-        'danceability': librosa.feature.rms(y=y).mean(),
-        'energy': librosa.feature.spectral_centroid(y=y, sr=sr).mean(),
-        'valence': librosa.feature.zero_crossing_rate(y).mean(),
-        'tempo': librosa.beat.tempo(y=y, sr=sr)[0] / 250,
-        'acousticness': librosa.feature.spectral_bandwidth(y=y, sr=sr).mean(),
-        'instrumentalness': librosa.feature.spectral_flatness(y=y).mean(),
-        'liveness': librosa.feature.spectral_rolloff(y=y, sr=sr).mean(),
-        'speechiness': librosa.feature.mfcc(y=y, sr=sr).mean()
-    }
-    scaled = scaler.transform([list(features.values())])[0]
-    return scaled
-
-def compute_feature_weights(user_query):
-    query_vec = model.encode(user_query)
-    weights = {}
-    for feature, fvec in feature_embeddings.items():
-        sim = cosine_similarity([query_vec], [fvec])[0][0]
-        weights[feature] = max(sim, 0)
-    total = sum(weights.values())
-    return {k: v / total for k, v in weights.items()} if total > 0 else weights
-
+# === Utility Functions ===
 def get_spotify_info(track, artist):
     results = sp.search(q=f"{track} {artist}", type='track', limit=1)
     items = results['tracks']['items']
@@ -101,14 +54,6 @@ def build_song_data(indices):
 def get_random_songs(n=20):
     return build_song_data(random.sample(range(len(df)), n))
 
-def recommend_by_query(user_query, top_k=10):
-    weights = compute_feature_weights(user_query)
-    scores = np.zeros(len(df))
-    for feature in audio_features:
-        scores += df[feature].values * weights.get(feature, 0)
-    indices = np.argsort(scores)[-top_k:][::-1]
-    return build_song_data(indices)
-
 def recommend_similar_by_track(track_name, top_k=10):
     row = df[df['track_name'] == track_name]
     if row.empty: return []
@@ -127,24 +72,6 @@ HTML_TEMPLATE = '''
 <style>
     body { font-family: 'Segoe UI', sans-serif; background: black; color: white; margin: 0; padding: 0; }
     header { background: #111; padding: 20px; text-align: center; font-size: 28px; font-weight: bold; }
-    form { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; margin: 20px; align-items: center; }
-    input[type="text"] { padding: 10px; border-radius: 6px; border: none; width: 40%; }
-    input[type="submit"], .refresh-btn, .custom-file-upload {
-        padding: 10px 15px; background: green; color: white; font-weight: bold;
-        border: none; border-radius: 6px; cursor: pointer; text-decoration: none;
-    }
-    .custom-file-upload {
-        display: inline-block;
-        position: relative;
-        overflow: hidden;
-    }
-    .custom-file-upload input[type="file"] {
-        position: absolute;
-        left: 0;
-        top: 0;
-        opacity: 0;
-        cursor: pointer;
-    }
     .songs-grid { display: flex; flex-wrap: wrap; justify-content: center; gap: 20px; padding: 20px; }
     .song-card {
         background: #222; padding: 10px; border-radius: 12px; width: 200px;
@@ -157,23 +84,12 @@ HTML_TEMPLATE = '''
 </head>
 <body>
 <header>Music Recommendation System</header>
-<form method="POST" action="/recommend" enctype="multipart/form-data">
-    <label class="custom-file-upload">
-        <input type="file" name="file" accept=".mp3,.wav,.ogg">
-        Upload file
-    </label>
-    <input type="text" name="query" placeholder="Describe your mood or genre...">
-    <input type="submit" value="Recommend">
-    <a href="/" class="refresh-btn">🔄</a>
-</form>
 
 {% if selected_song %}
 <h2 style="text-align:center;">Now Playing: {{ selected_song }}</h2>
 {% if selected_uri %}
 <div style="text-align:center;"><iframe src="https://open.spotify.com/embed/track/{{ selected_uri.split(':')[-1] }}" width="300" height="80" frameborder="0" allowtransparency="true" allow="encrypted-media"></iframe></div>
 {% endif %}
-{% elif query %}
-<h2 style="text-align:center;">Top Recommendations for: "{{ query }}"</h2>
 {% else %}
 <h2 style="text-align:center;">Featured Songs</h2>
 {% endif %}
@@ -201,32 +117,13 @@ def home():
     songs = get_random_songs()
     return render_template_string(HTML_TEMPLATE, results=songs)
 
-@app.route('/recommend', methods=['POST'])
-def recommend():
-    if 'file' in request.files and request.files['file'].filename != '':
-        file = request.files['file']
-        filename = secure_filename(file.filename)
-        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        file.save(filepath)
-        features = extract_features(filepath)
-        scores = cosine_similarity([features], df[audio_features])[0]
-        top_indices = np.argsort(scores)[-10:][::-1]
-        os.remove(filepath)
-        return render_template_string(HTML_TEMPLATE, selected_song="Your Uploaded Audio", results=build_song_data(top_indices))
-    
-    query = request.form.get('query', '')
-    results = recommend_by_query(query)
-    return render_template_string(HTML_TEMPLATE, query=query, results=results)
-
 @app.route('/song/<track_name>')
 def song(track_name):
     similar = recommend_similar_by_track(track_name)
     info = get_spotify_info(track_name, df[df['track_name'] == track_name]['artists'].values[0])
     return render_template_string(HTML_TEMPLATE, selected_song=track_name, selected_uri=info["uri"], results=similar)
 
-# === Run App ===
+# === For Deployment (Render, Railway, etc.) ===
 if __name__ == '__main__':
-    import os
-    port = int(os.environ.get("PORT", 5000))
+    port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
-
